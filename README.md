@@ -1,94 +1,81 @@
 ![dashboard](https://raw.githubusercontent.com/losywee/azure-doh-function/refs/heads/main/dashboard.png)
-=======
+
 # Azure Functions DoH
 
-基于 Azure Functions Node.js 20、TypeScript 和 programming model v4 的 DNS over HTTPS 服务，内置 React + Tailwind CSS 管理面板。
+DNS-over-HTTPS relay for Azure Functions, with multiple upstream resolvers, local DNS fallback, custom hosts, ad blocking, and a built-in dashboard.
 
-## 功能
+Azure Functions DNS over HTTPS (DoH) 转发服务，支持多个上游解析器、本地 DNS 回退、自定义 hosts、广告拦截和内置管理面板。
 
-- RFC 8484 `GET` / `POST` DNS over HTTPS
-- 多个 DoH 上游轮询和故障转移
-- 本地系统 DNS 查询
-- DoH 失败后自动回退到本地 DNS
-- 自定义 hosts 覆盖
-- 基于 `Ad-set-hosts` 的广告域名拦截
-- 同一个 Azure Function App 内托管 Dashboard
+## Features / 功能
 
-## HTTP API
+- RFC 8484 DoH requests over `GET` and `POST` / 支持 RFC 8484 `GET` 和 `POST` DoH 请求
+- Multiple HTTPS upstreams with failover / 多个 HTTPS 上游及故障转移
+- `doh`, `local`, and `auto` resolution modes / `doh`、`local` 和 `auto` 解析模式
+- Custom hosts overrides / 自定义 hosts 覆盖
+- Optional hosts-file ad blocking / 可选 hosts 文件广告拦截
+- Built-in React dashboard / 内置 React 管理面板
 
-| 方法 | 路径 | 说明 |
+## Routes / 路由
+
+| Method | Route | Description / 说明 |
 | --- | --- | --- |
-| `GET` | `/api/dns-query?dns=<base64url>` | RFC 8484 GET 查询 |
-| `POST` | `/api/dns-query` | 请求体为 `application/dns-message` |
-| `GET` | `/api/dashboard` | 管理面板 |
-| `GET` | `/api/config` | 读取运行时配置 |
-| `PUT` | `/api/config` | 更新运行时配置 |
+| `GET` | `/api/dns-query?dns=<base64url>` | DoH DNS query / DoH DNS 查询 |
+| `POST` | `/api/dns-query` | DoH request body with `application/dns-message` / 使用 `application/dns-message` 请求体 |
+| `GET` | `/api/dashboard` | Dashboard / 管理面板 |
+| `GET` | `/api/config` | Read runtime configuration / 读取运行时配置 |
+| `PUT` | `/api/config` | Update runtime configuration / 更新运行时配置 |
 
-配置 API 需要请求头：
+`/api/admin/*` is reserved by Azure Functions. Use `/api/config`, not `/api/admin/config`.
+
+`/api/admin/*` 是 Azure Functions 保留路径。请使用 `/api/config`，不要使用 `/api/admin/config`。
+
+The configuration routes require this request header:
+
+配置路由必须包含以下请求头：
 
 ```text
 x-dashboard-key: <DASHBOARD_KEY>
 ```
 
-DoH 响应类型为 `application/dns-message`。
+## Configuration / 配置
 
-## 配置
+Configure these application settings in Azure Portal under **Function App > Configuration > Application settings**.
 
-在 Azure Function App 的 **Configuration > Application settings** 中设置以下变量：
+在 Azure 门户的 **Function App > Configuration > Application settings** 中设置以下应用设置。
 
-| 变量 | 默认值 | 说明 |
+| Setting | Default | Description / 说明 |
 | --- | --- | --- |
-| `DASHBOARD_KEY` | 无 | Dashboard 和配置 API 的访问密钥 |
-| `DNS_QUERY_MODE` | `doh` | `doh`、`local` 或 `auto` |
-| `DOH_UPSTREAM_URLS` | Cloudflare DoH | DoH URL，使用逗号或换行分隔 |
-| `DOH_UPSTREAM_URL` | 无 | 单上游兼容配置 |
-| `CUSTOM_HOSTS` | 空 | 自定义 hosts 内容 |
-| `DOH_TIMEOUT_MS` | `5000` | DoH 超时，最大 `30000` |
-| `DOH_MAX_BODY_BYTES` | `65535` | DNS 报文大小，最大 `1048576` |
-| `AD_BLOCK_ENABLED` | `false` | 是否启用广告拦截 |
-| `AD_BLOCK_SOURCE` | Ad-set-hosts | 广告 hosts 文件 URL |
-| `AD_BLOCK_REFRESH_MS` | `21600000` | 广告列表刷新间隔，6 小时 |
+| `DASHBOARD_KEY` | None / 无 | Dashboard and config API key / 管理面板和配置 API 密钥 |
+| `DNS_QUERY_MODE` | `doh` | `doh`, `local`, or `auto` / `doh`、`local` 或 `auto` |
+| `DOH_UPSTREAM_URLS` | Cloudflare DoH | Comma- or newline-separated HTTPS URLs / 逗号或换行分隔的 HTTPS URL |
+| `DOH_UPSTREAM_URL` | None / 无 | Single-upstream compatibility setting / 单上游兼容设置 |
+| `CUSTOM_HOSTS` | Empty / 空 | Hosts entries / hosts 条目 |
+| `DOH_TIMEOUT_MS` | `5000` | Upstream timeout, maximum `30000` / 上游超时，最大 `30000` |
+| `DOH_MAX_BODY_BYTES` | `65535` | DNS packet limit, maximum `1048576` / DNS 报文限制，最大 `1048576` |
+| `AD_BLOCK_ENABLED` | `false` | Enable ad blocking / 启用广告拦截 |
+| `AD_BLOCK_SOURCE` | Ad-set-hosts URL | HTTPS hosts file URL / HTTPS hosts 文件 URL |
+| `AD_BLOCK_REFRESH_MS` | `21600000` | Blocklist refresh interval / 拦截列表刷新间隔 |
 
-### 查询模式
-
-- `doh`：只使用配置的 DoH 上游
-- `local`：使用 Azure Functions 运行环境的系统 DNS，仅支持 A 和 AAAA
-- `auto`：先使用 DoH，上游全部失败后回退到本地 DNS
-
-### 多个 DoH 上游
+Example upstream configuration / 上游配置示例:
 
 ```text
 DOH_UPSTREAM_URLS=https://cloudflare-dns.com/dns-query,https://dns.google/dns-query
 ```
 
-每次请求从不同上游开始，并在失败时尝试其余上游。上游必须使用 HTTPS。
-
-### 自定义 hosts
-
-每行格式为 `IP hostname...`，也支持逗号分隔：
+Example custom hosts configuration / 自定义 hosts 示例:
 
 ```text
 10.0.0.10 internal.example.com
 2001:db8::10 api.example.com
 ```
 
-自定义 hosts 的优先级高于 DoH、本地 DNS 和广告列表。
+`doh` uses encrypted upstreams only. `local` uses the Function worker DNS resolver. `auto` tries DoH first, then local DNS.
 
-### 广告拦截
+`doh` 仅使用加密上游。`local` 使用 Function worker 的 DNS 解析器。`auto` 先尝试 DoH，再回退到本地 DNS。
 
-默认广告列表来源：
+## Local Development / 本地开发
 
-```text
-https://raw.githubusercontent.com/rentianyu/Ad-set-hosts/master/hosts
-```
-
-启用后，服务按刷新间隔下载标准 hosts 文件并缓存在当前 worker 内存中。命中的域名返回 `NXDOMAIN`，不会转发到上游。拉取失败时继续使用上一次成功的缓存。
-
-该第三方仓库当前未声明开源许可证，请在生产使用前确认其使用条件。
-
-## 本地运行
-
-依赖：
+Requirements / 依赖:
 
 - Node.js 20+
 - Azure Functions Core Tools
@@ -96,22 +83,23 @@ https://raw.githubusercontent.com/rentianyu/Ad-set-hosts/master/hosts
 ```bash
 npm install
 npm install --prefix dashboard
-npm run build:all
 npm test
 npm start
 ```
 
-本地 Dashboard 地址：
+Open the dashboard at `http://localhost:7071/api/dashboard`.
 
-```text
-http://localhost:7071/api/dashboard
-```
+管理面板地址：`http://localhost:7071/api/dashboard`。
 
-本地配置示例见 `local.settings.json`。该文件已加入 `.gitignore`，不要提交真实密钥。
+Use `local.settings.json` for local application settings. Do not commit real secrets.
 
-## Azure 部署
+使用 `local.settings.json` 保存本地应用设置。不要提交真实密钥。
 
-先配置应用设置：
+## Deployment / 部署
+
+Set the required application settings, build, then publish:
+
+设置所需应用设置，构建并发布：
 
 ```bash
 az functionapp config appsettings set \
@@ -120,16 +108,13 @@ az functionapp config appsettings set \
   --settings \
     DASHBOARD_KEY=<LONG_RANDOM_SECRET> \
     DNS_QUERY_MODE=auto \
-    DOH_UPSTREAM_URLS=https://cloudflare-dns.com/dns-query,https://dns.google/dns-query \
-    AD_BLOCK_ENABLED=true
-```
+    DOH_UPSTREAM_URLS=https://cloudflare-dns.com/dns-query,https://dns.google/dns-query
 
-构建并发布：
-
-```bash
 npm run build:all
 func azure functionapp publish <FUNCTION_APP_NAME>
 ```
+
+After deployment, open:
 
 部署后访问：
 
@@ -137,13 +122,13 @@ func azure functionapp publish <FUNCTION_APP_NAME>
 https://<FUNCTION_APP_NAME>.azurewebsites.net/api/dashboard
 ```
 
-Dashboard 修改的是当前 Function worker 的运行时配置。Function 重启、扩容或缩容后，配置会恢复为 Application settings 中的值。需要持久化的配置应同步写入 Azure Application settings。
+Configuration changes made through `/api/config` only affect the current Function worker. They are lost after a restart, scale event, or redeployment. Persist production settings in Azure Application settings.
 
-## 安全建议
+通过 `/api/config` 的配置修改只影响当前 Function worker。在重启、扩缩容或重新部署后会丢失。生产配置应保存在 Azure Application settings 中。
 
-- 使用长度足够的随机 `DASHBOARD_KEY`
-- 在 Azure Function App 中启用 HTTPS-only
-- 为生产环境配置访问限制、API Management 或其他认证层
-- 不要公开运行没有访问限制的匿名 DNS 转发器
-- 不要在日志中记录 DNS 请求内容
->>>>>>> df135d7 (first commit)
+## Security / 安全
+
+- Use a long, random `DASHBOARD_KEY` / 使用足够长的随机 `DASHBOARD_KEY`
+- Enable HTTPS-only / 启用仅 HTTPS
+- Restrict production access with networking rules, API Management, or another authentication layer / 使用网络规则、API Management 或其他认证层限制生产访问
+- Do not expose an unrestricted anonymous DNS relay / 不要公开无限制的匿名 DNS 转发器
