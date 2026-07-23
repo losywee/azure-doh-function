@@ -14,7 +14,7 @@ function App() {
   async function load() {
     setStatus({ kind: "loading", message: "Reading edge configuration..." });
     try {
-      const response = await fetch("/api/admin/config", { headers: { "x-dashboard-key": key } });
+      const response = await fetch("/api/config", { headers: { "x-dashboard-key": key } });
       if (!response.ok) throw new Error((await response.json()).error || "Unable to load configuration");
       setConfig(await response.json());
       setStatus({ kind: "success", message: "Runtime configuration loaded" });
@@ -25,7 +25,7 @@ function App() {
     setStatus({ kind: "loading", message: "Applying configuration..." });
     localStorage.setItem("dashboard-key", key);
     try {
-      const response = await fetch("/api/admin/config", { method: "PUT", headers: { "content-type": "application/json", "x-dashboard-key": key }, body: JSON.stringify(config) });
+      const response = await fetch("/api/config", { method: "PUT", headers: { "content-type": "application/json", "x-dashboard-key": key }, body: JSON.stringify(config) });
       if (!response.ok) throw new Error((await response.json()).error || "Unable to save configuration");
       setConfig(await response.json());
       setStatus({ kind: "success", message: "Applied to this Function instance" });

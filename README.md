@@ -23,8 +23,8 @@ Azure function app doh(dns over https), forward to upstream dns, hosts, ads bloc
 | `GET` | `/api/dns-query?dns=<base64url>` | RFC 8484 GET 查询 |
 | `POST` | `/api/dns-query` | 请求体为 `application/dns-message` |
 | `GET` | `/api/dashboard` | 管理面板 |
-| `GET` | `/api/admin/config` | 读取运行时配置 |
-| `PUT` | `/api/admin/config` | 更新运行时配置 |
+| `GET` | `/api/config` | 读取运行时配置 |
+| `PUT` | `/api/config` | 更新运行时配置 |
 
 配置 API 需要请求头：
 

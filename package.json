@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "DNS over HTTPS relay for Azure Functions",
-  "main": "dist/src/functions/*.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",

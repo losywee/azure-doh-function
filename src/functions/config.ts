@@ -18,4 +18,4 @@ export async function config(request: HttpRequest, _context: InvocationContext):
   }
 }
 
-app.http("config", { methods: ["GET", "PUT"], authLevel: "anonymous", route: "admin/config", handler: config });
+app.http("config", { methods: ["GET", "PUT"], authLevel: "anonymous", route: "config", handler: config });
