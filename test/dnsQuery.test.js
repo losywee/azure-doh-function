@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 test("project builds the Azure Function entrypoint", async () => {
   const { access } = require("node:fs/promises");
   await access("dist/src/functions/dnsQuery.js");
+  await access("dist/src/functions/config.js");
   assert.ok(true);
 });
 

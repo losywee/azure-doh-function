@@ -6,6 +6,7 @@
   "main": "dist/src/functions/*.js",
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "dashboard:build": "npm --prefix dashboard run build",
     "build:all": "npm run dashboard:build && npm run build",
     "start": "npm run build:all && func start",
