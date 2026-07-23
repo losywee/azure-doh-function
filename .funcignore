@@ -1,0 +1,7 @@
+.git/
+.vscode/
+node_modules/
+test/
+*.md
+local.settings.json
+dashboard/node_modules/

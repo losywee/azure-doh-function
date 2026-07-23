@@ -1,0 +1,24 @@
+{
+  "name": "azure-doh-function",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DNS over HTTPS relay for Azure Functions",
+  "main": "dist/src/functions/*.js",
+  "scripts": {
+    "build": "tsc",
+    "dashboard:build": "npm --prefix dashboard run build",
+    "build:all": "npm run dashboard:build && npm run build",
+    "start": "npm run build:all && func start",
+    "test": "npm run build:all && node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
