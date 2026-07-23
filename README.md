@@ -1,4 +1,4 @@
-![dashboard]([https://example.com](https://raw.githubusercontent.com/losywee/azure-doh-function/refs/heads/main/dashboard.png)) 
+![dashboard](https://raw.githubusercontent.com/losywee/azure-doh-function/refs/heads/main/dashboard.png)
 =======
 # Azure Functions DoH
 
