@@ -1,6 +1,4 @@
-<<<<<<< HEAD
-# azure-doh-function
-Azure function app doh(dns over https), forward to upstream dns, hosts, ads block
+![dashboard]([https://example.com](https://raw.githubusercontent.com/losywee/azure-doh-function/refs/heads/main/dashboard.png)) 
 =======
 # Azure Functions DoH
 
