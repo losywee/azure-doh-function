@@ -5,8 +5,124 @@ import { getRuntimeConfig } from "../config.js";
 
 const DNS_MESSAGE_TYPE = "application/dns-message";
 const DEFAULT_UPSTREAMS = ["https://cloudflare-dns.com/dns-query"];
+const UPSTREAM_CACHE_SIZE = 1024;
+const UPSTREAM_CACHE_MAX_TTL_MS = 3600000;
 let upstreamCursor = 0;
 let adBlockCache: { source: string; loadedAt: number; hosts: Set<string> } | undefined;
+
+interface CachedDnsResponse {
+  expiresAt: number;
+  packet: Buffer;
+  storedAt: number;
+}
+
+function skipDnsName(packet: Uint8Array, offset: number): number {
+  let cursor = offset;
+  while (cursor < packet.length) {
+    const length = packet[cursor++];
+    if (length === 0) return cursor;
+    if ((length & 0xc0) === 0xc0) {
+      if (cursor >= packet.length) throw new Error("Invalid DNS name");
+      return cursor + 1;
+    }
+    if ((length & 0xc0) !== 0 || length > 63 || cursor + length > packet.length) throw new Error("Invalid DNS name");
+    cursor += length;
+  }
+  throw new Error("Invalid DNS name");
+}
+
+function responseTtlOffsets(packet: Uint8Array): { answerTtls: number[]; ttls: number[] } | undefined {
+  if (packet.length < 12 || (packet[2] & 0x80) === 0 || (packet[2] & 0x02) !== 0 || (packet[3] & 0x0f) !== 0) return undefined;
+  const questions = (packet[4] << 8) | packet[5];
+  const answers = (packet[6] << 8) | packet[7];
+  const authorities = (packet[8] << 8) | packet[9];
+  const additionals = (packet[10] << 8) | packet[11];
+  let cursor = 12;
+  try {
+    for (let index = 0; index < questions; index += 1) {
+      cursor = skipDnsName(packet, cursor);
+      if (cursor + 4 > packet.length) return undefined;
+      cursor += 4;
+    }
+    const answerTtls: number[] = [];
+    const ttls: number[] = [];
+    for (let index = 0; index < answers + authorities + additionals; index += 1) {
+      cursor = skipDnsName(packet, cursor);
+      if (cursor + 10 > packet.length) return undefined;
+      const ttlOffset = cursor + 4;
+      const dataLength = (packet[cursor + 8] << 8) | packet[cursor + 9];
+      if (cursor + 10 + dataLength > packet.length) return undefined;
+      ttls.push(ttlOffset);
+      if (index < answers) answerTtls.push(ttlOffset);
+      cursor += 10 + dataLength;
+    }
+    return cursor === packet.length ? { answerTtls, ttls } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function cacheKey(query: Uint8Array): string {
+  return Buffer.from(query.slice(2)).toString("base64");
+}
+
+export class UpstreamDnsCache {
+  private readonly entries = new Map<string, CachedDnsResponse>();
+  private hits = 0;
+  private misses = 0;
+
+  constructor(private readonly maxEntries = UPSTREAM_CACHE_SIZE, private readonly maxTtlMs = UPSTREAM_CACHE_MAX_TTL_MS) {}
+
+  get(query: Uint8Array, now = Date.now()): Buffer | undefined {
+    const key = cacheKey(query);
+    const entry = this.entries.get(key);
+    if (!entry) {
+      this.misses += 1;
+      return undefined;
+    }
+    if (entry.expiresAt <= now) {
+      this.entries.delete(key);
+      this.misses += 1;
+      return undefined;
+    }
+    const offsets = responseTtlOffsets(entry.packet);
+    if (!offsets) {
+      this.entries.delete(key);
+      this.misses += 1;
+      return undefined;
+    }
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    const answer = Buffer.from(entry.packet);
+    answer[0] = query[0];
+    answer[1] = query[1];
+    const elapsedSeconds = Math.floor((now - entry.storedAt) / 1000);
+    for (const offset of offsets.ttls) answer.writeUInt32BE(Math.max(0, answer.readUInt32BE(offset) - elapsedSeconds), offset);
+    this.hits += 1;
+    return answer;
+  }
+
+  set(query: Uint8Array, response: Buffer, now = Date.now()): void {
+    const offsets = responseTtlOffsets(response);
+    if (!offsets || offsets.answerTtls.length === 0) return;
+    const ttlSeconds = Math.min(...offsets.answerTtls.map((offset) => response.readUInt32BE(offset)));
+    if (ttlSeconds === 0) return;
+    const key = cacheKey(query);
+    this.entries.delete(key);
+    this.entries.set(key, { packet: Buffer.from(response), storedAt: now, expiresAt: now + Math.min(ttlSeconds * 1000, this.maxTtlMs) });
+    while (this.entries.size > this.maxEntries) this.entries.delete(this.entries.keys().next().value as string);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+
+  stats(): { capacity: number; entries: number; hits: number; misses: number } {
+    return { capacity: this.maxEntries, entries: this.entries.size, hits: this.hits, misses: this.misses };
+  }
+}
+
+export const upstreamCache = new UpstreamDnsCache();
 
 function configNumber(name: string, fallback: number, max: number): number {
   const value = Number.parseInt(process.env[name] ?? "", 10);
@@ -212,7 +328,12 @@ export async function dnsQuery(request: HttpRequest, context: InvocationContext)
     else if (mode === "local") answer = await localLookup(query, parsedQuestion);
     else {
       try {
-        answer = await dohLookup(query, timeoutMs, maxBodyBytes, context);
+        const cached = upstreamCache.get(query);
+        if (cached) answer = cached;
+        else {
+          answer = await dohLookup(query, timeoutMs, maxBodyBytes, context);
+          upstreamCache.set(query, answer);
+        }
       } catch (error) {
         if (mode !== "auto") throw error;
         context.warn("All DoH upstreams failed; falling back to local DNS");
