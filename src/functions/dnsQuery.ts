@@ -2,6 +2,7 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 import dns from "node:dns/promises";
 import { isIP } from "node:net";
 import { getRuntimeConfig } from "../config.js";
+import { getPersistentCache, getPersistentRuntimeConfig, PersistedCacheEntry, savePersistentCache } from "../persistentState.js";
 
 const DNS_MESSAGE_TYPE = "application/dns-message";
 const DEFAULT_UPSTREAMS = ["https://cloudflare-dns.com/dns-query"];
@@ -120,9 +121,32 @@ export class UpstreamDnsCache {
   stats(): { capacity: number; entries: number; hits: number; misses: number } {
     return { capacity: this.maxEntries, entries: this.entries.size, hits: this.hits, misses: this.misses };
   }
+
+  snapshot(now = Date.now()): PersistedCacheEntry[] {
+    return [...this.entries].flatMap(([key, entry]) => entry.expiresAt > now ? [{ key, packet: entry.packet.toString("base64"), storedAt: entry.storedAt, expiresAt: entry.expiresAt }] : []);
+  }
+
+  restore(entries: PersistedCacheEntry[], now = Date.now()): void {
+    for (const entry of entries) {
+      if (entry.expiresAt > now && typeof entry.key === "string" && typeof entry.packet === "string" && Number.isFinite(entry.storedAt)) {
+        this.entries.set(entry.key, { packet: Buffer.from(entry.packet, "base64"), storedAt: entry.storedAt, expiresAt: entry.expiresAt });
+      }
+    }
+    while (this.entries.size > this.maxEntries) this.entries.delete(this.entries.keys().next().value as string);
+  }
 }
 
 export const upstreamCache = new UpstreamDnsCache();
+let cacheRestored: Promise<void> | undefined;
+
+export async function restoreUpstreamCache(): Promise<void> {
+  cacheRestored ??= getPersistentCache().then((entries) => upstreamCache.restore(entries));
+  await cacheRestored;
+}
+
+export async function persistUpstreamCache(): Promise<void> {
+  await savePersistentCache(upstreamCache.snapshot());
+}
 
 function configNumber(name: string, fallback: number, max: number): number {
   const value = Number.parseInt(process.env[name] ?? "", 10);
@@ -138,8 +162,7 @@ function errorResponse(status: number, message: string): HttpResponseInit {
   return { status, headers: { "content-type": "text/plain; charset=utf-8" }, body: message };
 }
 
-function upstreams(): string[] {
-  const runtime = getRuntimeConfig();
+function upstreams(runtime: ReturnType<typeof getRuntimeConfig>): string[] {
   if (runtime.upstreams.length > 0) return runtime.upstreams;
   const configured = (process.env.DOH_UPSTREAM_URLS ?? process.env.DOH_UPSTREAM_URL ?? "")
     .split(/[\n,]+/)
@@ -172,9 +195,8 @@ function question(packet: Uint8Array): { name: string; type: number; classCode: 
   };
 }
 
-function customHosts(): Map<string, string[]> {
+function customHosts(source: string): Map<string, string[]> {
   const hosts = new Map<string, string[]>();
-  const source = getRuntimeConfig().customHosts;
   for (const line of source.split(/\r?\n|,/)) {
     const fields = line.trim().split(/\s+/).filter(Boolean);
     if (fields.length < 2 || fields[0].startsWith("#")) continue;
@@ -187,8 +209,7 @@ function customHosts(): Map<string, string[]> {
   return hosts;
 }
 
-async function adBlockHosts(context: InvocationContext): Promise<Set<string>> {
-  const config = getRuntimeConfig();
+async function adBlockHosts(config: ReturnType<typeof getRuntimeConfig>, context: InvocationContext): Promise<Set<string>> {
   if (!config.adBlockEnabled) return new Set();
   if (adBlockCache && adBlockCache.source === config.adBlockSource && Date.now() - adBlockCache.loadedAt < config.adBlockRefreshMs) return adBlockCache.hosts;
   try {
@@ -251,27 +272,26 @@ function ipv6Bytes(address: string): Buffer {
   }));
 }
 
-async function localLookup(query: Uint8Array, parsed: { name: string; type: number; classCode: number }): Promise<Buffer> {
+async function localLookup(query: Uint8Array, parsed: { name: string; type: number; classCode: number }, custom: Map<string, string[]>): Promise<Buffer> {
   if (parsed.classCode !== 1 || (parsed.type !== 1 && parsed.type !== 28)) throw new Error("Local mode supports A and AAAA only");
-  const custom = customHosts().get(parsed.name);
-  const addresses = custom ?? (await dns.lookup(parsed.name, { all: true, verbatim: true })).map((item) => item.address);
+  const addresses = custom.get(parsed.name) ?? (await dns.lookup(parsed.name, { all: true, verbatim: true })).map((item) => item.address);
   return localResponse(query, parsed.name, parsed.type, addresses);
 }
 
-async function dohLookup(query: Uint8Array, timeoutMs: number, maxBodyBytes: number, context: InvocationContext): Promise<Buffer> {
-  const configured = upstreams();
+async function dohLookup(query: Uint8Array, runtime: ReturnType<typeof getRuntimeConfig>, context: InvocationContext): Promise<Buffer> {
+  const configured = upstreams(runtime);
   const ordered = configured.map((_, index) => configured[(upstreamCursor + index) % configured.length]);
   upstreamCursor = (upstreamCursor + 1) % configured.length;
   let lastError: unknown;
   for (const upstream of ordered) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), runtime.timeoutMs);
     try {
       const response = await fetch(upstream, { method: "POST", headers: { accept: DNS_MESSAGE_TYPE, "content-type": DNS_MESSAGE_TYPE, "user-agent": "azure-doh-function/1.0" }, body: Buffer.from(query), signal: controller.signal });
       const responseType = response.headers.get("content-type")?.split(";", 1)[0].toLowerCase();
       if (!response.ok || responseType !== DNS_MESSAGE_TYPE) throw new Error(`Invalid upstream response (${response.status})`);
       const answer = Buffer.from(await response.arrayBuffer());
-      if (answer.length > maxBodyBytes) throw new Error("Upstream response is too large");
+       if (answer.length > runtime.maxBodyBytes) throw new Error("Upstream response is too large");
       return answer;
     } catch (error) {
       lastError = error;
@@ -288,7 +308,8 @@ export async function dnsQuery(request: HttpRequest, context: InvocationContext)
     return errorResponse(405, "Only GET and POST are supported");
   }
 
-  const maxBodyBytes = configNumber("DOH_MAX_BODY_BYTES", 65535, 1048576);
+  const runtime = await getPersistentRuntimeConfig();
+  const maxBodyBytes = runtime.maxBodyBytes;
   let query: Uint8Array;
 
   if (request.method === "GET") {
@@ -315,29 +336,31 @@ export async function dnsQuery(request: HttpRequest, context: InvocationContext)
     return errorResponse(400, "Invalid DNS message");
   }
 
-  const mode = (process.env.DNS_QUERY_MODE ?? "doh").toLowerCase();
-  const timeoutMs = getRuntimeConfig().timeoutMs;
+  const mode = runtime.mode;
 
   try {
     if (mode !== "doh" && mode !== "local" && mode !== "auto") return errorResponse(500, "Invalid DNS_QUERY_MODE");
     let answer: Buffer;
-    const hostOverride = customHosts().get(parsedQuestion.name);
-    const blocked = await adBlockHosts(context);
+    const hosts = customHosts(runtime.customHosts);
+    const hostOverride = hosts.get(parsedQuestion.name);
+    const blocked = await adBlockHosts(runtime, context);
     if (blocked.has(parsedQuestion.name)) answer = blockedResponse(query);
     else if (hostOverride) answer = localResponse(query, parsedQuestion.name, parsedQuestion.type, hostOverride);
-    else if (mode === "local") answer = await localLookup(query, parsedQuestion);
+    else if (mode === "local") answer = await localLookup(query, parsedQuestion, hosts);
     else {
       try {
+        await restoreUpstreamCache();
         const cached = upstreamCache.get(query);
         if (cached) answer = cached;
         else {
-          answer = await dohLookup(query, timeoutMs, maxBodyBytes, context);
+          answer = await dohLookup(query, runtime, context);
           upstreamCache.set(query, answer);
+          await persistUpstreamCache();
         }
       } catch (error) {
         if (mode !== "auto") throw error;
         context.warn("All DoH upstreams failed; falling back to local DNS");
-        answer = await localLookup(query, parsedQuestion);
+        answer = await localLookup(query, parsedQuestion, hosts);
       }
     }
     return {
@@ -351,9 +374,29 @@ export async function dnsQuery(request: HttpRequest, context: InvocationContext)
   }
 }
 
+export async function queryAlias(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
+  const config = await getPersistentRuntimeConfig();
+  if (!config.queryAliases.includes(request.params.alias ?? "")) return errorResponse(404, "DNS query alias not found");
+  return dnsQuery(request, context);
+}
+
 app.http("dnsQuery", {
   methods: ["GET", "POST"],
   authLevel: "anonymous",
   route: "dns-query",
   handler: dnsQuery
+});
+
+app.http("customQuery", {
+  methods: ["GET", "POST"],
+  authLevel: "anonymous",
+  route: "custom-query",
+  handler: dnsQuery
+});
+
+app.http("queryAlias", {
+  methods: ["GET", "POST"],
+  authLevel: "anonymous",
+  route: "{alias}",
+  handler: queryAlias
 });

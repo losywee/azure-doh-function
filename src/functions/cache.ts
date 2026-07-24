@@ -1,5 +1,6 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
-import { upstreamCache } from "./dnsQuery.js";
+import { restoreUpstreamCache, upstreamCache } from "./dnsQuery.js";
+import { deletePersistentCache } from "../persistentState.js";
 
 function authorized(request: HttpRequest): boolean {
   const key = process.env.DASHBOARD_KEY;
@@ -8,9 +9,13 @@ function authorized(request: HttpRequest): boolean {
 
 export async function cache(request: HttpRequest, _context: InvocationContext): Promise<HttpResponseInit> {
   if (!process.env.DASHBOARD_KEY || !authorized(request)) return { status: 401, jsonBody: { error: "Dashboard key required" } };
-  if (request.method === "GET") return { status: 200, jsonBody: upstreamCache.stats() };
+  if (request.method === "GET") {
+    await restoreUpstreamCache();
+    return { status: 200, jsonBody: upstreamCache.stats() };
+  }
   if (request.method === "DELETE") {
     upstreamCache.clear();
+    await deletePersistentCache();
     return { status: 200, jsonBody: upstreamCache.stats() };
   }
   return { status: 405, jsonBody: { error: "Only GET and DELETE are supported" } };
@@ -19,6 +24,7 @@ export async function cache(request: HttpRequest, _context: InvocationContext): 
 export async function purgeCache(request: HttpRequest, _context: InvocationContext): Promise<HttpResponseInit> {
   if (!process.env.DASHBOARD_KEY || !authorized(request)) return { status: 401, jsonBody: { error: "Dashboard key required" } };
   upstreamCache.clear();
+  await deletePersistentCache();
   return { status: 200, jsonBody: upstreamCache.stats() };
 }
 

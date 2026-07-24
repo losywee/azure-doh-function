@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 test("project builds the Azure Function entrypoint", async () => {
   const { access } = require("node:fs/promises");
   await access("dist/src/index.js");
+  await access("dist/src/persistentState.js");
   await access("dist/src/functions/cache.js");
   await access("dist/src/functions/dnsQuery.js");
   await access("dist/src/functions/config.js");
@@ -13,6 +14,13 @@ test("project builds the Azure Function entrypoint", async () => {
 test("supports the documented DNS configuration format", () => {
   assert.match("https://cloudflare-dns.com/dns-query,https://dns.google/dns-query", /,/);
   assert.match("10.0.0.10 internal.example.com", /^\S+\s+\S+$/);
+});
+
+test("accepts safe custom DNS query aliases", () => {
+  const { validQueryAlias } = require("../dist/src/config.js");
+  assert.equal(validQueryAlias("resolver-2"), true);
+  assert.equal(validQueryAlias("dns-query"), false);
+  assert.equal(validQueryAlias("not/a-route"), false);
 });
 
 function dnsPacket(id, ttl, name = "example") {
@@ -59,4 +67,18 @@ test("evicts least recently used upstream DNS replies", () => {
   assert.ok(cache.get(first, 1000));
   assert.equal(cache.get(second, 1000), undefined);
   assert.ok(cache.get(third, 1000));
+});
+
+test("restores only unexpired upstream DNS cache entries", () => {
+  const { UpstreamDnsCache } = require("../dist/src/functions/dnsQuery.js");
+  const source = new UpstreamDnsCache(2, 60000);
+  const query = dnsPacket(1, 30, "saved");
+  source.set(query, query, 1000);
+  const snapshot = source.snapshot(2000);
+  snapshot.push({ key: "expired", packet: query.toString("base64"), storedAt: 0, expiresAt: 1 });
+
+  const restored = new UpstreamDnsCache(2, 60000);
+  restored.restore(snapshot, 2000);
+  assert.ok(restored.get(query, 2000));
+  assert.equal(restored.stats().entries, 1);
 });

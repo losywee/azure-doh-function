@@ -9,6 +9,7 @@ export interface RuntimeConfig {
   adBlockEnabled: boolean;
   adBlockSource: string;
   adBlockRefreshMs: number;
+  queryAliases: string[];
 }
 
 export function getRuntimeConfig(): RuntimeConfig {
@@ -23,6 +24,7 @@ export function getRuntimeConfig(): RuntimeConfig {
     ,adBlockEnabled: process.env.AD_BLOCK_ENABLED === "true"
     ,adBlockSource: process.env.AD_BLOCK_SOURCE ?? "https://raw.githubusercontent.com/rentianyu/Ad-set-hosts/master/hosts"
     ,adBlockRefreshMs: positiveNumber(process.env.AD_BLOCK_REFRESH_MS, 21600000, 604800000)
+    ,queryAliases: []
   };
 }
 
@@ -40,6 +42,7 @@ export function applyRuntimeConfig(input: Partial<RuntimeConfig>): RuntimeConfig
   if (input.adBlockEnabled !== undefined && typeof input.adBlockEnabled !== "boolean") throw new Error("Invalid adBlockEnabled");
   if (input.adBlockSource !== undefined && (typeof input.adBlockSource !== "string" || !input.adBlockSource.startsWith("https://"))) throw new Error("Ad block source must be an HTTPS URL");
   if (input.adBlockRefreshMs !== undefined && (!Number.isInteger(input.adBlockRefreshMs) || input.adBlockRefreshMs < 60000 || input.adBlockRefreshMs > 604800000)) throw new Error("Invalid adBlockRefreshMs");
+  if (input.queryAliases !== undefined && (!Array.isArray(input.queryAliases) || input.queryAliases.length > 20 || input.queryAliases.some((alias) => typeof alias !== "string" || !validQueryAlias(alias)) || new Set(input.queryAliases).size !== input.queryAliases.length)) throw new Error("Aliases must be unique lowercase path names");
 
   if (input.mode !== undefined) process.env.DNS_QUERY_MODE = input.mode;
   if (input.upstreams !== undefined) process.env.DOH_UPSTREAM_URLS = input.upstreams.join("\n");
@@ -49,5 +52,13 @@ export function applyRuntimeConfig(input: Partial<RuntimeConfig>): RuntimeConfig
   if (input.adBlockEnabled !== undefined) process.env.AD_BLOCK_ENABLED = String(input.adBlockEnabled);
   if (input.adBlockSource !== undefined) process.env.AD_BLOCK_SOURCE = input.adBlockSource;
   if (input.adBlockRefreshMs !== undefined) process.env.AD_BLOCK_REFRESH_MS = String(input.adBlockRefreshMs);
-  return getRuntimeConfig();
+  const runtime = getRuntimeConfig();
+  if (input.queryAliases !== undefined) runtime.queryAliases = input.queryAliases;
+  return runtime;
+}
+
+const reservedQueryAliases = new Set(["admin", "cache", "config", "custom-query", "dashboard", "dns-query"]);
+
+export function validQueryAlias(alias: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,62})$/.test(alias) && !reservedQueryAliases.has(alias);
 }
